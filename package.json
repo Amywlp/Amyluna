@@ -1,0 +1,27 @@
+{
+  "name": "amyluna",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SnowLuma Adapter v2 — three-process QQ bot (Receiver / ConvMgr / LLM Core)",
+  "scripts": {
+    "dev:p1": "tsx watch src/receiver/index.ts",
+    "dev:p2": "tsx watch src/convmgr/index.ts",
+    "dev:p3": "tsx watch src/llmcore/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start:p1": "node dist/receiver/index.js",
+    "start:p2": "node dist/convmgr/index.js",
+    "start:p3": "node dist/llmcore/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "mysql2": "^3.12.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
