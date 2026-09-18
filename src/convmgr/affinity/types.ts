@@ -1,14 +1,14 @@
 /**
- * 好感度系统 — 共享类型定义。
+ * 好感度系统 — 共享类型定义（百分制）。
  *
- * 缓存格式：每个用户一条字符串 "5+1+1" 或 "5+1-1"，
- * 第一个数字为长期好感度，后续为短期变更（"+1" 或 "-1"）。
+ * 缓存格式：每个用户一条字符串 "50+1+1" 或 "50+1-1"，
+ * 第一个数字为长期好感度（百分制 1-100），后续为短期变更（"+1" 或 "-1"）。
  *
  * 规则：
  * - LLM 调用工具仅在末尾追加 +1 或 -1
  * - 相邻 +1-1 或 -1+1 抵消后被移除
  * - 连续三个相同符号并入长期好感度并触发 DB 写入
- * - 好感度范围 1-10，超出截断
+ * - 好感度范围 1-100，超出截断
  *
  * 迁移自 v1 affinity/types.ts。
  */
@@ -36,21 +36,28 @@ export interface AffinityParsed {
   shortTerms: string[];
 }
 
-/** 好感度范围 1-10 截断。 */
+/** 好感度范围 1-100 截断。 */
 export function clampAffinity(value: number): number {
-  return Math.max(1, Math.min(10, Math.round(value)));
+  return Math.max(1, Math.min(100, Math.round(value)));
 }
 
 /** 解析状态字符串，返回长期好感度和短期变更数组。 */
 export function parseAffinity(state: string): AffinityParsed {
-  const match = state.match(/^(\d+)((?:[+-]1)*)$/);
-  if (!match) return { longTerm: 5, shortTerms: [] };
-  const longTerm = clampAffinity(Number.parseInt(match[1]!, 10) || 5);
+  const match = state.match(/^(\d+)((?:[+-]\d+)*)$/);
+  if (!match) return { longTerm: 30, shortTerms: [] };
+  const longTerm = clampAffinity(Number.parseInt(match[1]!, 10) || 30);
   const shortPart = match[2] ?? "";
   const shortTerms: string[] = [];
-  for (let i = 0; i < shortPart.length; i += 2) {
-    const token = shortPart.slice(i, i + 2);
-    if (token === "+1" || token === "-1") shortTerms.push(token);
+  for (let i = 0; i < shortPart.length; ) {
+    const sign = shortPart[i]!;
+    let j = i + 1;
+    while (j < shortPart.length && /\d/.test(shortPart[j]!)) j++;
+    const token = shortPart.slice(i, j);
+    if (sign === "+" || sign === "-") {
+      const val = Number.parseInt(token.slice(1), 10);
+      if (Number.isFinite(val) && val > 0) shortTerms.push(token);
+    }
+    i = j;
   }
   return { longTerm, shortTerms };
 }
@@ -94,7 +101,7 @@ export function effectiveAffinity(state: string): number {
   const { longTerm, shortTerms } = parseAffinity(state);
   let total = longTerm;
   for (const t of shortTerms) {
-    total += t === "+1" ? 1 : -1;
+    total += t.startsWith("-") ? -Number.parseInt(t.slice(1), 10) : Number.parseInt(t.slice(1), 10);
   }
   return clampAffinity(total);
 }

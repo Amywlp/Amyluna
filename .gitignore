@@ -1,6 +1,25 @@
+# 依赖与构建产物
 node_modules/
 dist/
+# 环境与密钥
 .env
 .env.local
-*.log
+.env.*
+!.env.example
+# 运行数据与日志
+data/
 logs/
+*.log
+# 本地备份/快照（每次改动留下的 .bak-*、backup-*、dist-backup-* 等）
+*.bak
+*.bak-*
+*.tgz
+backup*/
+backup-*
+dist-backup*/
+src-backup*/
+preset-backup*/
+# 临时脚本与缓存
+*.tmp
+test-*.ts
+.codex*

@@ -19,6 +19,7 @@
 import { createLogger } from "../common/logger";
 import type { MessageRepository, StoredMessage } from "../common/db/message-repository";
 import type { ContextInjector, ContextEntry } from "./affinity/types";
+import { extractSilentCalls } from "./silent-text-extractor";
 
 const log = createLogger("P2.ctx");
 
@@ -63,36 +64,36 @@ export class ContextBuilder {
    * @param isPrivate 是否为私聊（默认 false）
    */
   async build(triggerMessageId?: number, isPrivate: boolean = false): Promise<BuildResult> {
-    // 1. 从 DB 查询最近 N 条
+    // 1. 从 DB 查询最近 N 条（仅作常规上下文来源）
     const rows = await this.repo.findRecentByGroup(this.groupId, this.contextLimit, isPrivate);
 
-    // 2. 过滤掉空内容，转为 ContextEntry
-    const entries: ContextEntry[] = [];
-    for (const row of rows.reverse()) {  // 时间升序
-      if (row.role !== "user" && row.role !== "assistant") continue;
-
-      // 合并转发消息：merged_forward 列存储了从 QQ 获取的完整内容，
-      // content 列只有占位符 "[合并转发]"，优先使用 merged_forward
-      const mergedContent = (row.merged_forward ?? "").trim();
-      const text = mergedContent
-        ? mergedContent
-        : (row.content ?? "").trim();
-      if (!text) continue;
-
-      entries.push({
-        sender_name: row.sender_name ?? "unknown",
-        user_id: row.user_id,
-        message_id: row.message_id ?? 0,
-        text,
-        time: new Date(row.created_at).getTime() / 1000,
-        role: row.role as "user" | "assistant",
-      });
+    // 2. 触发消息：始终按 message_id 直查，与「最近 N 条」窗口彻底解耦
+    let triggerRow: StoredMessage | null = null;
+    if (triggerMessageId != null) {
+      triggerRow = rows.find((r) => r.message_id === triggerMessageId) ?? null;
+      if (!triggerRow) {
+        triggerRow = await this.repo.findByMessageId(triggerMessageId);
+        if (triggerRow) {
+          rows.push(triggerRow); // 并入 rows，供 resolveQuotes 的引用解析使用
+        }
+      }
     }
 
-    // 限制长度
+    // 3. 构建常规上下文 entries（排除触发消息，触发消息单独拎出）
+    const entries: ContextEntry[] = [];
+    for (const row of rows.reverse()) {  // 时间升序
+      if (triggerMessageId != null && row.message_id === triggerMessageId) continue;
+      const entry = this.toEntry(row);
+      if (entry) entries.push(entry);
+    }
+
+    // 限制常规上下文长度（不触碰触发消息）
     while (entries.length > this.contextLimit) {
       entries.shift();
     }
+
+    // 4. 触发消息独立条目
+    const triggerEntry = triggerRow ? this.toEntry(triggerRow) : null;
 
     log.info("build.start", {
       groupId: this.groupId,
@@ -101,53 +102,21 @@ export class ContextBuilder {
       hasTrigger: triggerMessageId != null,
     });
 
-    // 3. 规范化发送者名称（每个用户用最新的群名片）
-    this.normalizeNames(entries);
+    // 5. 规范化发送者名称（每个用户用最新的群名片）
+    const all = triggerEntry ? [...entries, triggerEntry] : entries;
+    this.normalizeNames(all);
 
-    // 4. 为每条消息解析引用
-    await this.resolveQuotes(entries, rows);
+    // 6. 为每条消息解析引用
+    await this.resolveQuotes(all, rows);
 
-    // 5. 格式化为上下文字符串（触发消息单独拎出）
-    const contextLines: string[] = [];
-    let triggerLine: string | null = null;
-
-    for (const entry of entries) {
-      // 收集注入器返回的外部参数
-      const injected = this.injectors
-        .map((inj) => inj.inject(entry))
-        .filter((v): v is string => v != null);
-      // group_id 是会话级参数，始终注入
-      injected.unshift(`group:${this.groupId}`);
-      const injectionBlock = injected.length > 0 ? ` {${injected.join(", ")}}` : "";
-
-      if (entry.role === "assistant") {
-        contextLines.push(entry.text);
-        continue;
-      }
-
-      // 被引用消息嵌入（在 resolveQuotes 中设置）
-      const quotePrefix = (entry as ContextEntryWithQuote).quotePrefix ?? "";
-
-      const prefix = entry.message_id
-        ? `[MsgID:${entry.message_id}] [${entry.sender_name}](${entry.user_id})${injectionBlock}: `
-        : `[${entry.sender_name}](${entry.user_id})${injectionBlock}: `;
-
-      const formattedLine = prefix + quotePrefix + entry.text;
-
-      // 触发消息：从常规上下文中移除，放入触发消息段
-      const isTrigger = triggerMessageId != null && entry.message_id === triggerMessageId;
-      if (isTrigger) {
-        triggerLine = formattedLine;
-      } else {
-        contextLines.push(formattedLine);
-      }
-    }
+    // 7. 格式化为上下文字符串（常规上下文 + 触发消息段）
+    const contextLines: string[] = entries.map((e) => this.formatEntry(e));
 
     // 追加触发消息段
     contextLines.push("");
     contextLines.push("[触发消息]");
-    if (triggerLine) {
-      contextLines.push(triggerLine);
+    if (triggerEntry) {
+      contextLines.push(this.formatEntry(triggerEntry));
     } else {
       // 无触发消息 → 随机插嘴
       contextLines.push("（随机插嘴）");
@@ -157,10 +126,64 @@ export class ContextBuilder {
     log.info("build.done", {
       entryCount: entries.length,
       contextLen: context.length,
-      hasTrigger: triggerLine != null,
+      hasTrigger: triggerEntry != null,
     });
 
     return { context, entryCount: entries.length };
+  }
+
+  /** 将 StoredMessage 转为上下文条目（空内容返回 null） */
+  private toEntry(row: StoredMessage): ContextEntry | null {
+    if (row.role !== "user" && row.role !== "assistant") return null;
+
+    // 合并转发消息：merged_forward 列存储了从 QQ 获取的完整内容，
+    // content 列只有占位符 "[合并转发]"，优先使用 merged_forward
+    const mergedContent = (row.merged_forward ?? "").trim();
+    let text = mergedContent
+      ? mergedContent
+      : (row.content ?? "").trim();
+    if (!text) return null;
+
+    // assistant（bot 自己）消息：存库时存的是清洗前原文（含 affinity()/getmeme() 等标记），
+    // 若原样喂回上下文，LLM 会在下一轮看到自己上轮输出的原始工具标记，
+    // 形成"认娘→写标签→喂回→继续认娘"的污染闭环。这里剥离静默工具标记，只留人话。
+    if (row.role === "assistant") {
+      text = extractSilentCalls(text).cleanedText.trim();
+      if (!text) return null;
+    }
+
+    return {
+      sender_name: row.sender_name ?? "unknown",
+      user_id: row.user_id,
+      message_id: row.message_id ?? 0,
+      text,
+      time: new Date(row.created_at).getTime() / 1000,
+      role: row.role as "user" | "assistant",
+    };
+  }
+
+  /** 将上下文条目格式化为一行（注入参数 + 引用前缀 + 前缀） */
+  private formatEntry(entry: ContextEntry): string {
+    // 收集注入器返回的外部参数
+    const injected = this.injectors
+      .map((inj) => inj.inject(entry))
+      .filter((v): v is string => v != null);
+    // group_id 是会话级参数，始终注入
+    injected.unshift(`group:${this.groupId}`);
+    const injectionBlock = injected.length > 0 ? ` {${injected.join(", ")}}` : "";
+
+    if (entry.role === "assistant") {
+      return entry.text;
+    }
+
+    // 被引用消息嵌入（在 resolveQuotes 中设置）
+    const quotePrefix = (entry as ContextEntryWithQuote).quotePrefix ?? "";
+
+    const prefix = entry.message_id
+      ? `[MsgID:${entry.message_id}] [${entry.sender_name}](${entry.user_id})${injectionBlock}: `
+      : `[${entry.sender_name}](${entry.user_id})${injectionBlock}: `;
+
+    return prefix + quotePrefix + entry.text;
   }
 
   /**

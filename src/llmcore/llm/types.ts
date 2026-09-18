@@ -84,6 +84,8 @@ export interface LLMResponse {
   finishReason: string;
   toolCalls?: ToolCall[];
   usage?: TokenUsage;
+  /** 模型思维链（reasoning_content，deepseek 等 reasoner 模型返回） */
+  reasoningContent?: string | null;
   provider?: string;
   model?: string;
   baseUrl?: string;

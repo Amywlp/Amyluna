@@ -16,6 +16,7 @@ export interface LLMClientConfig {
   maxTokens?: number;
   timeoutMs: number;
   reasoningEffort?: string;
+  headers?: Record<string, string>;
 }
 
 export class LLMClient {
@@ -58,6 +59,7 @@ export class LLMClient {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${this.config.apiKey}`,
+          ...(this.config.headers ?? {}),
         },
         body: JSON.stringify({
           model: this.config.model,
@@ -101,6 +103,7 @@ export class LLMClient {
       content: choice.message.content?.trim() ?? null,
       finishReason: choice.finish_reason ?? "stop",
       toolCalls: choice.message.tool_calls,
+      reasoningContent: choice.message.reasoning_content?.trim() ?? null,
       usage: data.usage
         ? {
             promptTokens: data.usage.prompt_tokens ?? 0,

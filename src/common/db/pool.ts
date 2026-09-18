@@ -55,6 +55,7 @@ export async function ensureTables(pool: Pool): Promise<void> {
       voice_urls TEXT,
       other_media TEXT,
       merged_forward TEXT,
+      card_json TEXT,
       media_parsed INT DEFAULT 0,
       quoted_message_id VARCHAR(64),
       created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -65,6 +66,14 @@ export async function ensureTables(pool: Pool): Promise<void> {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
   log2.info("table.chat_messages", { status: "ready" });
+
+  // 兼容存量表：补充 card_json 列（json 段卡片 payload 保真存储）
+  try {
+    await pool.query(`ALTER TABLE chat_messages ADD COLUMN card_json TEXT`);
+    log2.info("table.chat_messages.addColumn", { column: "card_json", status: "added" });
+  } catch {
+    // 列已存在（Duplicate column name）→ 忽略
+  }
 
   // ─── token_usage ─────────────────────────────
   await pool.query(`
@@ -96,7 +105,7 @@ export async function ensureTables(pool: Pool): Promise<void> {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_affinity (
       user_id BIGINT NOT NULL PRIMARY KEY,
-      long_term_affinity INT NOT NULL DEFAULT 3,
+      long_term_affinity INT NOT NULL DEFAULT 30,
       short_term_changes VARCHAR(255) NOT NULL DEFAULT '',
       impressions JSON DEFAULT NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -109,4 +118,27 @@ export async function ensureTables(pool: Pool): Promise<void> {
     // 列已存在（Duplicate column name）→ 忽略
   }
   log2.info("table.user_affinity", { status: "ready" });
+
+  // ─── group_files（群文件元数据；与 chat_messages 以 message_id 逻辑联查）───
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS group_files (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      message_id BIGINT NOT NULL UNIQUE,
+      group_id BIGINT NOT NULL,
+      user_id BIGINT NOT NULL,
+      file_id VARCHAR(255) NOT NULL,
+      file_name VARCHAR(255) NOT NULL,
+      file_size BIGINT,
+      url TEXT,
+      file_hash VARCHAR(64),
+      download_status ENUM('pending','downloaded','failed','expired') DEFAULT 'pending',
+      download_error TEXT,
+      local_path VARCHAR(512),
+      analysis_status ENUM('none','queued','done','failed') DEFAULT 'none',
+      created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      INDEX idx_group_id (group_id),
+      INDEX idx_file_id (file_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+  log2.info("table.group_files", { status: "ready" });
 }

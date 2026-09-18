@@ -13,6 +13,7 @@ import * as dotenv from "dotenv";
 export interface SnowLumaConfig {
   wsUrl: string;
   accessToken: string;
+  httpAccessToken?: string;
   heartbeatIntervalMs: number;
   reconnectBaseDelayMs: number;
   reconnectMaxDelayMs: number;
@@ -28,6 +29,8 @@ export interface LLMProviderConfig {
   maxTokens?: number;
   timeoutMs?: number;
   reasoningEffort?: string;
+  fallback?: string;
+  headers?: Record<string, string>;
 }
 
 export interface LLMRelayConfig {
@@ -176,6 +179,13 @@ export function loadLLMProviders(env: NodeJS.ProcessEnv): LLMProviderConfig[] {
       maxTokens: typeof obj.maxTokens === "number" ? obj.maxTokens : undefined,
       timeoutMs: typeof obj.timeoutMs === "number" ? obj.timeoutMs : undefined,
       reasoningEffort: typeof obj.reasoningEffort === "string" ? obj.reasoningEffort : undefined,
+      fallback: typeof obj.fallback === "string" ? obj.fallback : undefined,
+      headers:
+        typeof obj.headers === "object" && obj.headers !== null
+          ? Object.fromEntries(
+              Object.entries(obj.headers as Record<string, unknown>).map(([k, v]) => [k, String(v)]),
+            )
+          : undefined,
     };
   });
 }
@@ -240,6 +250,7 @@ export function loadConfig(): AppConfig {
     snowluma: {
       wsUrl: env.SNOWLUMA_WS_URL || "ws://127.0.0.1:3001",
       accessToken: env.SNOWLUMA_ACCESS_TOKEN || "",
+      httpAccessToken: env.SNOWLUMA_HTTP_ACCESS_TOKEN || env.SNOWLUMA_ACCESS_TOKEN || "",
       heartbeatIntervalMs: toPositiveInt(env.SNOWLUMA_HEARTBEAT_INTERVAL_MS, 30000),
       reconnectBaseDelayMs: toPositiveInt(env.SNOWLUMA_RECONNECT_BASE_DELAY_MS, 1000),
       reconnectMaxDelayMs: toPositiveInt(env.SNOWLUMA_RECONNECT_MAX_DELAY_MS, 30000),

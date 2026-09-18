@@ -14,6 +14,7 @@ import type { LLMResponse, ToolCall, ChatMessage, ToolDefinition } from "./llm/t
 import type { TokenUsage } from "./llm/types";
 import { IpcClient } from "../common/ipc/client";
 import { MessageRepository } from "../common/db/message-repository";
+import type { FileRepository } from "../common/db/file-repository";
 
 // 创建 mock MessageRepository（测试不需要真实 DB 连接）
 function createMockRepo(): MessageRepository {
@@ -48,30 +49,12 @@ async function main(): Promise<void> {
     console.log(`    - ${p.name}: systemPrompt=${p.systemPrompt.length}chars, keywords=[${p.triggerKeywords.join(",")}]`);
   }
 
-  // ─── 2. ToolRegistry ──────────────────���──────────────
+  // ─── 2. ToolRegistry ─────────────────────────────────
   console.log("\n[2/5] ToolRegistry 测试...");
   const registry = new ToolRegistry();
   // Mock p1Client for test（temp_mute 工具注册需要，但测试中不会真正调用）
   const mockP1Client = new IpcClient(0, "P3→P1-test");
   const mockRepo = createMockRepo();
-  registerBuiltinTools(registry, mockP1Client, mockRepo);
-
-  const defs = registry.getToolDefinitions();
-  console.log(`  ✓ 注册 ${defs.length} 个非静默工具: ${defs.map((d) => d.function.name).join(", ")}`);
-
-  // 验证工具存在
-  console.log(`  ✓ web_search 在 registry: ${registry.has("web_search")}`);
-  console.log(`  ✓ get_time 在 registry: ${registry.has("get_time")}`);
-  console.log(`  ✓ get_meme 不在 registry (静默工具): ${!registry.has("get_meme")}`);
-  console.log(`  ✓ update_affinity 不在 registry (静默工具): ${!registry.has("update_affinity")}`);
-
-  // 执行 get_time
-  const timeResult = await registry.execute("get_time", { timezone: "Asia/Shanghai" });
-  console.log(`  ✓ get_time 执行: ${JSON.stringify(timeResult).slice(0, 100)}`);
-
-  // 搜索未知工具（静默工具场景）
-  const unknownResult = await registry.execute("get_meme", { tag: "开心" });
-  console.log(`  ✓ 未知工具(get_meme) 执行失败: ${JSON.stringify(unknownResult)}`);
 
   // ─── 3. 模拟 ConversationLoop ─────────────────────────
   console.log("\n[3/5] ConversationLoop 测试 (mock LLM)...");
@@ -115,6 +98,40 @@ async function main(): Promise<void> {
     },
     chat: async () => "mock",
   } as unknown as LLMRelay;
+
+  // 注册内置工具（需 mock relay/vision/fileRepo）
+  const mockFileRepo = {
+    findByMessageId: async () => null,
+  } as unknown as FileRepository;
+  const mockVisionConfig = {
+    alias: "vision",
+    systemPrompt: "",
+  };
+  registerBuiltinTools(registry, {
+    p1Client: mockP1Client,
+    repo: mockRepo,
+    fileRepo: mockFileRepo,
+    relay: mockRelay,
+    visionConfig: mockVisionConfig,
+  });
+
+  const defs = registry.getToolDefinitions();
+  console.log(`  ✓ 注册 ${defs.length} 个非静默工具: ${defs.map((d) => d.function.name).join(", ")}`);
+
+  // 验证工具存在
+  console.log(`  ✓ web_search 在 registry: ${registry.has("web_search")}`);
+  console.log(`  ✓ get_time 在 registry: ${registry.has("get_time")}`);
+  console.log(`  ✓ resolve_media 在 registry: ${registry.has("resolve_media")}`);
+  console.log(`  ✓ get_meme 不在 registry (静默工具): ${!registry.has("get_meme")}`);
+  console.log(`  ✓ update_affinity 不在 registry (静默工具): ${!registry.has("update_affinity")}`);
+
+  // 执行 get_time
+  const timeResult = await registry.execute("get_time", { timezone: "Asia/Shanghai" });
+  console.log(`  ✓ get_time 执行: ${JSON.stringify(timeResult).slice(0, 100)}`);
+
+  // 搜索未知工具（静默工具场景）
+  const unknownResult = await registry.execute("get_meme", { tag: "开心" });
+  console.log(`  ✓ 未知工具(get_meme) 执行失败: ${JSON.stringify(unknownResult)}`);
 
   const loop = new ConversationLoop(mockRelay, registry, 6);
 

@@ -1,6 +1,6 @@
 {
   "name": "amyluna",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "SnowLuma Adapter v2 — three-process QQ bot (Receiver / ConvMgr / LLM Core)",
   "scripts": {

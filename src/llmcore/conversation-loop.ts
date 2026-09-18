@@ -16,6 +16,7 @@ import type { ChatMessage } from "./llm/types";
 import { logLLMResponse } from "./llm/llm-logger";
 import type { ToolRegistry } from "./tools/registry";
 import { createLogger } from "../common/logger";
+import { stripStdToolText } from "../common/tool-text-guard";
 
 /** Safe JSON parse – returns parsed object or empty object on failure. */
 function parseArgs(raw: string): Record<string, unknown> {
@@ -54,6 +55,10 @@ function extractUserVisibleContent(text: string | null): string {
   let cleaned = text.replace(/<invoke[^>]*>[\s\S]*?<\/invoke>/gi, "");
   // 移除可能残留的 XML 标签
   cleaned = cleaned.replace(/<\/?parameter[^>]*>/gi, "");
+  // 移除标准工具被误写成文本标记的残留（如 search_song(...) / send_song_card(...) /
+  // resolve_media(...) / temp_mute(...) 等），防止泄漏给用户。
+  // 名单唯一来源：src/common/tool-text-guard.ts（此处曾另存一份，导致改一处漏一处）。
+  cleaned = stripStdToolText(cleaned);
   // 清理多余空行
   cleaned = cleaned.replace(/\n{3,}/g, "\n\n").trim();
   return cleaned;
@@ -195,10 +200,11 @@ export class ConversationLoop {
 
       // ── 有 tool_calls ──
       if (response.toolCalls && response.toolCalls.length > 0) {
-        // 分类：非静默（在 registry 中）vs 静默（不在 registry 中）
+        // 分类：非静默（在 registry 中且非 block）vs 静默（未注册 或 block=true）
         const hasNonSilent = response.toolCalls.some((tc) => {
           if (tc.type !== "function") return false;
-          return this.registry.has(tc.function.name);
+          const meta = this.registry.findByName(tc.function.name);
+          return !!meta && !meta.block;
         });
 
         // 非静默工具存在时，把 assistant 消息（含 tool_calls）推入 messages
@@ -218,9 +224,12 @@ export class ConversationLoop {
 
           const args = parseArgs(tc.function.arguments);
 
-          const isRegistered = this.registry.has(tc.function.name);
+          const meta = this.registry.findByName(tc.function.name);
+          const isRegistered = !!meta;
+          // 静默工具 = 未注册，或已注册但 block=true（如 timer/tts/muri_agent/text2image）
+          const isSilentTool = !isRegistered || !!meta.block;
 
-          if (!isRegistered) {
+          if (isSilentTool) {
             // ── 静默工具：P3 不执行，收集 + 占位 tool result ──
             log.info("loop.silentTool", {
               turn,
@@ -262,7 +271,6 @@ export class ConversationLoop {
             contentPreview: (result.content ?? result.error ?? "").slice(0, 200),
           });
 
-          const meta = this.registry.findByName(tc.function.name);
           if (meta?.requiresFollowUp) {
             allSilent = false;
           }

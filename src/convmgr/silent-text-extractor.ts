@@ -12,6 +12,7 @@
  */
 
 import { createLogger } from "../common/logger";
+import { stripStdToolText } from "../common/tool-text-guard";
 
 const log = createLogger("P2.silent-extract");
 
@@ -116,6 +117,11 @@ const T2I_RE = /text2image\(\s*"([^"]*)"\s*\)/g;
 
 /** text2image 主题最大长度 */
 const T2I_MAX_TOPIC_LEN = 200;
+
+/** temp_mute(...) 残留剥离 — 非文本调用工具，模型误写为文本时剥离防泄漏 */
+const TEMP_MUTE_RE = /temp_mute\s*\([^)]*\)/g;
+
+// 标准工具文本标记剥离名单的唯一来源：src/common/tool-text-guard.ts
 
 /** 最短定时时长（秒） */
 const MIN_TIMER_SEC = 60;
@@ -407,6 +413,10 @@ export function extractSilentCalls(
   cleaned = cleaned.replace(MURI_AGENT_RE, "");
   // 再移除 text2image 标记
   cleaned = cleaned.replace(T2I_RE, "");
+  // 剥离 temp_mute 残留（标准工具误写成文本，系统不解析，剥离防泄漏）
+  cleaned = cleaned.replace(TEMP_MUTE_RE, "");
+  // 剥离其他标准工具误写的文本标记（search_song / send_song_card / web_search 等）
+  cleaned = stripStdToolText(cleaned);
 
   // 清理残留：标记移除后可能留下多余空行
   cleaned = cleaned

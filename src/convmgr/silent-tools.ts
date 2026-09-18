@@ -46,6 +46,13 @@ export interface SilentToolResult {
   error?: string;
 }
 
+/** 执行上下文（timer/muri_agent 等需要群与用户信息） */
+export interface SilentExecContext {
+  groupId?: number;
+  userId?: number;
+  messageId?: number;
+}
+
 /** SilentToolExecutor 构造选项 */
 export interface SilentToolExecutorOptions {
   /** 任务队列管理器（用于生命周期管理的工具） */
@@ -164,16 +171,27 @@ export class SilentToolExecutor {
   }
 
   /**
-   * 执行静默工具调用列表（IPC 传递的 SilentToolCall[]，兼容保留）。
+   * 执行静默工具调用列表（P3 function calling 通道的 SilentToolCall[]）。
+   *
+   * 同轮同工具去重：同一工具一轮只执行一次（保留最后一次出现的调用）；
+   * update_affinity 按 userId 去重（不同用户各自一次，同用户取最后一次）。
+   * 不同工具可同时执行。
    *
    * @returns memeUrl（若有 get_meme 调用）
    */
-  executeAll(silentToolCalls: SilentToolCall[]): SilentToolResult {
+  executeAll(silentToolCalls: SilentToolCall[], ctx?: SilentExecContext): SilentToolResult {
     const result: SilentToolResult = {};
 
-    for (const call of silentToolCalls) {
+    // 同轮同工具去重（保留最后一次出现的）
+    const latest = new Map<string, SilentToolCall>();
+    for (const c of silentToolCalls) {
+      const key = c.name === "update_affinity" ? `update_affinity:${(c.arguments ?? {}).user_id}` : c.name;
+      latest.set(key, c);
+    }
+
+    for (const call of latest.values()) {
       try {
-        const toolResult = this.executeOne(call);
+        const toolResult = this.executeOne(call, ctx);
         if (toolResult.memeUrl) result.memeUrl = toolResult.memeUrl;
         if (toolResult.error && !result.error) result.error = toolResult.error;
       } catch (err) {
@@ -184,6 +202,112 @@ export class SilentToolExecutor {
     }
 
     return result;
+  }
+
+  /**
+   * 合并执行（推荐入口）：把 function calling 通道（silentToolCalls）与
+   * 正文标记通道（extracted）合并为一次执行。
+   *
+   * 同轮同工具只执行一次，silentToolCalls（显式工具调用）优先于正文标记；
+   * update_affinity 按 userId 合并（不同用户可各调一次）。
+   */
+  executeMerged(
+    extracted: ExtractedSilentCalls,
+    silentToolCalls: SilentToolCall[],
+    ctx?: SilentExecContext,
+  ): SilentToolResult {
+    const merged: ExtractedSilentCalls = {
+      cleanedText: extracted.cleanedText,
+      memeTag: extracted.memeTag,
+      affinityCalls: [...extracted.affinityCalls],
+      timerCall: extracted.timerCall,
+      ttsCall: extracted.ttsCall,
+      muriAgentCall: extracted.muriAgentCall,
+      text2imageCall: extracted.text2imageCall,
+    };
+
+    for (const call of silentToolCalls) {
+      const args = call.arguments ?? {};
+      switch (call.name) {
+        case "get_meme": {
+          const tag = String(args.tag ?? "").trim();
+          if (tag && VALID_MEME_TAGS.has(tag)) {
+            merged.memeTag = tag;
+          } else if (tag) {
+            log.warn("meme.invalidTag", { tag });
+          }
+          break;
+        }
+        case "update_affinity": {
+          const userId = Number(args.user_id);
+          const delta = Number(args.delta);
+          if (!Number.isFinite(userId) || userId <= 0 || (delta !== 1 && delta !== -1)) {
+            log.warn("affinity.invalidArgs", { userId: args.user_id, delta: args.delta });
+            break;
+          }
+          const impressionRaw = typeof args.impression === "string" ? args.impression.trim() : "";
+          const entry: AffinityCall = {
+            userId,
+            delta: delta === 1 ? "+1" : "-1",
+            impression: impressionRaw ? impressionRaw.slice(0, 10) : undefined,
+          };
+          const idx = merged.affinityCalls.findIndex((a) => a.userId === userId);
+          if (idx >= 0) merged.affinityCalls[idx] = entry;
+          else merged.affinityCalls.push(entry);
+          break;
+        }
+        case "timer": {
+          const dur = Number(args.duration_sec ?? args.durationSec);
+          const eventText = String(args.event_text ?? args.eventText ?? "").trim();
+          if (!Number.isFinite(dur) || dur <= 0 || !eventText) {
+            log.warn("timer.invalidArgs", { durationSec: args.duration_sec, eventText });
+            break;
+          }
+          merged.timerCall = {
+            durationSec: Math.min(24 * 3600, Math.max(60, Math.round(dur))),
+            eventText,
+          };
+          break;
+        }
+        case "tts": {
+          const text = String(args.text ?? "").trim();
+          if (!text) {
+            log.warn("tts.emptyText");
+            break;
+          }
+          const lang = typeof args.lang === "string" ? args.lang.trim() : undefined;
+          const translation = typeof args.translation === "string" ? args.translation.trim() : undefined;
+          merged.ttsCall = {
+            text: text.slice(0, 300),
+            lang: lang || undefined,
+            translation: translation || undefined,
+          };
+          break;
+        }
+        case "muri_agent": {
+          const task = String(args.task ?? "").trim();
+          if (!task) {
+            log.warn("muriAgent.emptyTask");
+            break;
+          }
+          merged.muriAgentCall = { task, userId: ctx?.userId, messageId: ctx?.messageId };
+          break;
+        }
+        case "text2image": {
+          const topic = String(args.topic ?? "").trim();
+          if (!topic) {
+            log.warn("text2image.emptyTopic");
+            break;
+          }
+          merged.text2imageCall = { topic: topic.slice(0, 200) };
+          break;
+        }
+        default:
+          log.warn("unknownToolCall", { name: call.name });
+      }
+    }
+
+    return this.executeExtracted(merged, ctx?.groupId, ctx?.userId);
   }
 
   // ─── 私有：分流判断 ────────────────────────────────────
@@ -402,7 +526,7 @@ export class SilentToolExecutor {
 
   // ─── 私有：兼容路径 ────────────────────────────────────
 
-  private executeOne(call: SilentToolCall): SilentToolResult {
+  private executeOne(call: SilentToolCall, ctx?: SilentExecContext): SilentToolResult {
     const args = call.arguments ?? {};
 
     switch (call.name) {
@@ -431,6 +555,98 @@ export class SilentToolExecutor {
 
         const newAffinity = this.affinityCache.addDelta(userId, delta === 1 ? "+1" : "-1");
         log.info("affinity.updated", { userId, delta, newAffinity });
+        return {};
+      }
+
+      case "timer": {
+        const dur = Number(args.duration_sec ?? args.durationSec);
+        const eventText = String(args.event_text ?? args.eventText ?? "").trim();
+        if (!Number.isFinite(dur) || dur <= 0 || !eventText) {
+          return { error: `timer 参数无效: duration_sec=${args.duration_sec}, event_text="${eventText}"` };
+        }
+        if (!this.timerManager) {
+          return { error: "timerManager 未就绪" };
+        }
+        if (ctx?.groupId == null || ctx?.userId == null) {
+          return { error: "timer 缺少群/用户上下文" };
+        }
+        const timerCall: TimerCall = {
+          durationSec: Math.min(24 * 3600, Math.max(60, Math.round(dur))),
+          eventText,
+        };
+        if (this.shouldQueue("timer")) {
+          this.executeTimerQueued(timerCall, ctx.groupId, ctx.userId);
+        } else {
+          const r: SilentToolResult = {};
+          this.executeTimerDirect(timerCall, ctx.groupId, ctx.userId, r);
+          if (r.error) return { error: r.error };
+        }
+        return {};
+      }
+
+      case "tts": {
+        const text = String(args.text ?? "").trim();
+        if (!text) {
+          return { error: "tts 文本为空" };
+        }
+        if (!this.ttsExecutor) {
+          return { error: "ttsExecutor 未就绪" };
+        }
+        if (ctx?.groupId == null) {
+          return { error: "tts 缺少群上下文" };
+        }
+        const lang = typeof args.lang === "string" ? args.lang.trim() : undefined;
+        const translation = typeof args.translation === "string" ? args.translation.trim() : undefined;
+        const ttsCall: TtsCall = {
+          text: text.slice(0, 300),
+          lang: lang || undefined,
+          translation: translation || undefined,
+        };
+        if (this.shouldQueue("tts")) {
+          this.executeTtsQueued(ttsCall, ctx.groupId);
+        } else {
+          this.executeTtsDirect(ttsCall, ctx.groupId);
+        }
+        return {};
+      }
+
+      case "muri_agent": {
+        const task = String(args.task ?? "").trim();
+        if (!task) {
+          return { error: "muri_agent 任务为空" };
+        }
+        if (!this.muriAgentExecutor) {
+          return { error: "muriAgentExecutor 未就绪" };
+        }
+        if (ctx?.groupId == null) {
+          return { error: "muri_agent 缺少群上下文" };
+        }
+        const muriCall: MuriAgentCall = { task, userId: ctx.userId, messageId: ctx.messageId };
+        if (this.shouldQueue("muri_agent")) {
+          this.executeMuriAgentQueued(muriCall, ctx.groupId);
+        } else {
+          this.executeMuriAgentDirect(muriCall, ctx.groupId);
+        }
+        return {};
+      }
+
+      case "text2image": {
+        const topic = String(args.topic ?? "").trim();
+        if (!topic) {
+          return { error: "text2image 主题为空" };
+        }
+        if (!this.text2imageExecutor) {
+          return { error: "text2imageExecutor 未就绪" };
+        }
+        if (ctx?.groupId == null) {
+          return { error: "text2image 缺少群上下文" };
+        }
+        const t2iCall: Text2ImageCall = { topic: topic.slice(0, 200) };
+        if (this.shouldQueue("text2image")) {
+          this.executeText2ImageQueued(t2iCall, ctx.groupId);
+        } else {
+          this.executeText2ImageDirect(t2iCall, ctx.groupId);
+        }
         return {};
       }
 

@@ -1,22 +1,22 @@
 /**
- * 好感度内存缓存 + 状态机。
+ * 好感度内存缓存 + 状态机（百分制）。
  *
- * 存储格式：每个 userId 对应一个状态字符串，如 "5+1+1"：
- *   "5"   = 长期好感度
- *   "+1"  = 短期变更（连续追加）
+ * 存储格式：每个 userId 对应一个状态字符串，如 "50+1+1"：
+ *   "50"  = 长期好感度（百分制 1-100）
+ *   "+1" = 短期变更（连续追加）
  *
  * 规则：
  * - addDelta(userId, "+1"|"-1")  追加到末尾
  * - 相邻 +1-1 或 -1+1 抵消后移除（循环消到不可消为止）
- * - 连续三个 +1 或三个 -1 合并进长期好感度，触发 DB 写入
- * - 好感度始终在 [1, 10] 截断
+ * - 连续三个 +1 或三个 -1 合并进长期好感度（±1），触发 DB 写入
+ * - 好感度始终在 [1, 100] 截断
  *
  * 用户印象（impressions）：
  * - addImpression(userId, text)  追加中文印象文本（≤10 字）
  * - 上限 MAX_IMPRESSIONS 条，FIFO
  * - 印象变更 → DB 写入
  *
- * 启动时从 AffinityRepository 加载已有记录，未命中用户默认 "5"。
+ * 启动时从 AffinityRepository 加载已有记录，未命中用户默认 "30"。
  *
  * 迁移自 v1 affinity/cache.ts，适配 common AffinityRepository。
  */
@@ -33,8 +33,8 @@ import type { Pool } from "../../common/db/pool";
 
 const log = createLogger("P2.affinity");
 
-/** 默认状态：长期 3（平常/初次见面），无短期变更。 */
-const DEFAULT_STATE = "3";
+/** 默认状态：长期 30（平常/初次见面），无短期变更。 */
+const DEFAULT_STATE = "30";
 
 export class AffinityCache {
   /** userId → 状态字符串 */
@@ -68,14 +68,14 @@ export class AffinityCache {
   /*  查询                                                               */
   /* ------------------------------------------------------------------ */
 
-  /** 获取用户状态字符串（不存在则返回默认 "5"）。 */
+  /** 获取用户状态字符串（不存在则返回默认 "30"）。 */
   getState(userId: number): string {
     return this.map.get(userId) ?? DEFAULT_STATE;
   }
 
   /**
    * 确保用户在缓存和 DB 中已初始化（首次触发时调用）。
-   * 已存在则无操作；不存在则设置默认 "5" 并异步写入 DB。
+   * 已存在则无操作；不存在则设置默认 "30" 并异步写入 DB。
    */
   ensureInitialized(userId: number): void {
     if (this.map.has(userId)) return;
@@ -86,7 +86,7 @@ export class AffinityCache {
     });
   }
 
-  /** 获取用户有效好感度数值 1-10。 */
+  /** 获取用户有效好感度数值 1-100。 */
   getEffective(userId: number): number {
     return effectiveAffinity(this.getState(userId));
   }

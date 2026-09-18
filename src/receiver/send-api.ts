@@ -53,6 +53,25 @@ export async function getForwardMsg(
   return result.messages;
 }
 
+export interface GroupFileUrlResult {
+  url: string;
+}
+
+/** 获取群文件下载 URL（凭 file_id 刷新时效链接）。 */
+export async function getGroupFileUrl(
+  client: WsClient,
+  groupId: number,
+  fileId: string,
+): Promise<GroupFileUrlResult> {
+  log.info("getGroupFileUrl.start", { group_id: groupId, file_id: fileId });
+  const result = await client.request<GroupFileUrlResult>("get_group_file_url", {
+    group_id: groupId,
+    file_id: fileId,
+  });
+  log.info("getGroupFileUrl.done", { hasUrl: !!result.url });
+  return result;
+}
+
 export async function sendGroupForwardMessage(
   client: WsClient,
   groupId: number,

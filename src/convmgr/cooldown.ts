@@ -8,12 +8,19 @@ import { createLogger } from "../common/logger";
 
 const log = createLogger("P2.cooldown");
 
+/** 冷却缓存中的一条触发消息（携带自己的 reason/time，flush 时用） */
+export interface CooldownTriggerEntry {
+  messageId: number;
+  reason?: string;
+  time?: number;
+}
+
 export interface CooldownState {
   groupId: number;
   /** 是否正在冷却中 */
   isCooling: boolean;
-  /** 冷却窗口内缓存的触发消息 ID 列表 */
-  msgCache: number[];
+  /** 冷却窗口内缓存的触发消息列表 */
+  msgCache: CooldownTriggerEntry[];
   /** CD 定时器 */
   timer: ReturnType<typeof setTimeout> | null;
   /** 最近一次处理回复的时间戳（Unix 秒） */
@@ -22,7 +29,7 @@ export interface CooldownState {
   busy: boolean;
 }
 
-export type CooldownCallback = (groupId: number, messageId: number) => Promise<void>;
+export type CooldownCallback = (groupId: number, entry: CooldownTriggerEntry) => Promise<void>;
 
 export class CooldownManager {
   private readonly groups = new Map<number, CooldownState>();
@@ -56,7 +63,7 @@ export class CooldownManager {
    *
    * @param onFire 触发回调（构建上下文 → 发送给 P3）
    */
-  async onTrigger(groupId: number, messageId: number, onFire: CooldownCallback): Promise<void> {
+  async onTrigger(groupId: number, entry: CooldownTriggerEntry, onFire: CooldownCallback): Promise<void> {
     const state = this.get(groupId);
 
     if (!state.isCooling) {
@@ -64,7 +71,7 @@ export class CooldownManager {
       state.isCooling = true;
       state.busy = true;
       try {
-        await onFire(groupId, messageId);
+        await onFire(groupId, entry);
         log.info("cooldown.start", { groupId, cooldownMs: this.cooldownMs });
         // 启动冷却定时器
         state.timer = setTimeout(() => {
@@ -77,8 +84,8 @@ export class CooldownManager {
         state.busy = false;
       }
     } else {
-      // 冷却中：缓存 message_id
-      state.msgCache.push(messageId);
+      // 冷却中：缓存触发消息
+      state.msgCache.push(entry);
       log.debug("cooldown.cached", { groupId, cacheSize: state.msgCache.length });
     }
   }
@@ -104,12 +111,12 @@ export class CooldownManager {
       return;
     }
 
-    if (state.msgCache.length > 0) {
+    const latestEntry = state.msgCache[state.msgCache.length - 1];
+    if (latestEntry) {
       // 用最新一条缓存消息发起
-      const latestMsgId = state.msgCache[state.msgCache.length - 1] ?? 0;
       state.busy = true;
       try {
-        await onFire(groupId, latestMsgId);
+        await onFire(groupId, latestEntry);
         // 重新启动冷却
         state.msgCache = [];
         state.timer = setTimeout(() => {

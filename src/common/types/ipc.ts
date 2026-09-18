@@ -87,7 +87,7 @@ export interface ChatPayload {
   user_id?: number;
   /** 触发消息的发送时间（OneBot Unix 秒） */
   time?: number;
-  /** 触发用户的有效好感度（1-10），用于 context_review 等工具校验权限 */
+  /** 触发用户的有效好感度（1-100），用于 context_review 等工具校验权限 */
   affinity?: number;
 }
 
@@ -139,7 +139,7 @@ export interface IntermediateReplyPayload {
 /** P3 → P1: QQ 互动操作请求（muri_agent QQ fun tools） */
 export interface QqActionPayload {
   /** OneBot action 名称 */
-  action: "send_like" | "send_poke" | "group_poke" | "set_group_reaction";
+  action: "send_like" | "send_poke" | "group_poke" | "set_group_reaction" | "get_group_file_url" | "send_group_msg";
   /** action 参数 */
   params: Record<string, unknown>;
 }

@@ -26,6 +26,7 @@ export interface StoredMessage {
   voice_urls: string | null;
   other_media: string | null;
   merged_forward: string | null;
+  card_json: string | null;
   media_parsed: number;
   quoted_message_id: string | null;
   created_at: string;
@@ -45,6 +46,7 @@ export interface InsertMessage {
   voice_urls?: string | null;
   other_media?: string | null;
   merged_forward?: string | null;
+  card_json?: string | null;
   media_parsed?: number;
   quoted_message_id?: string | null;
 }
@@ -68,8 +70,8 @@ export class MessageRepository {
     const [result] = await this.pool.query(
       `REPLACE INTO chat_messages
        (message_id, group_id, user_id, sender_name, is_private, role, content, tool_calls,
-        image_urls, video_urls, voice_urls, other_media, merged_forward, media_parsed, quoted_message_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        image_urls, video_urls, voice_urls, other_media, merged_forward, card_json, media_parsed, quoted_message_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         msg.message_id,
         msg.group_id,
@@ -84,6 +86,7 @@ export class MessageRepository {
         msg.voice_urls ?? null,
         msg.other_media ?? null,
         msg.merged_forward ?? null,
+        msg.card_json ?? null,
         msg.media_parsed ?? 0,
         msg.quoted_message_id ?? null,
       ],
@@ -105,6 +108,7 @@ export class MessageRepository {
       voice_urls: msg.voice_urls ?? null,
       other_media: msg.other_media ?? null,
       merged_forward: msg.merged_forward ?? null,
+      card_json: msg.card_json ?? null,
       media_parsed: msg.media_parsed ?? 0,
       quoted_message_id: msg.quoted_message_id ?? null,
       created_at: new Date().toISOString(),
@@ -174,5 +178,20 @@ export class MessageRepository {
       `UPDATE chat_messages SET media_parsed = ? WHERE message_id = ?`,
       [mediaParsed, messageId],
     );
+  }
+
+  /**
+   * 按自增行 id 往前取同群最近若干条（用于「就近找最近一条带视频的消息」兜底）。
+   * 用自增 id 排序而非 message_id：群消息 message_id 可为负且非单调。
+   */
+  async findRecentBeforeRow(groupId: number, beforeRowId: number, limit = 8): Promise<StoredMessage[]> {
+    const [rows] = await this.pool.query(
+      `SELECT * FROM chat_messages
+       WHERE group_id = ? AND id < ?
+       ORDER BY id DESC
+       LIMIT ${Number(limit)}`,
+      [groupId, beforeRowId],
+    );
+    return (rows as mysql.RowDataPacket[]).map((r) => r as StoredMessage);
   }
 }

@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import { IpcServer } from "../common/ipc/server";
 import { createLogger } from "../common/logger";
 import type { WsClient } from "./ws-client";
-import { sendGroupMessage, sendGroupForwardMessage, sendLike, sendPoke, groupPoke, setGroupReaction } from "./send-api";
+import { sendGroupMessage, sendGroupForwardMessage, sendLike, sendPoke, groupPoke, setGroupReaction, getGroupFileUrl } from "./send-api";
 import type { ForwardNode } from "./send-api";
 import type { MessageSegment } from "../common/types/onebot";
 import type { QqActionPayload, TempMutePayload } from "../common/types/ipc";
@@ -285,6 +285,27 @@ export function createP1IpcServer(port: number, deps: P1IpcServerDeps): IpcServe
           const groupId = payload.params.group_id != null ? Number(payload.params.group_id) : undefined;
           await setGroupReaction(deps.wsClient, messageId, code, groupId);
           break;
+        }
+        case "get_group_file_url": {
+          const groupId = Number(payload.params.group_id);
+          const fileId = String(payload.params.file_id ?? "");
+          const fileResult = await getGroupFileUrl(deps.wsClient, groupId, fileId);
+          reply({ success: true, result: { url: fileResult.url } });
+          log.info("qq_action.done", { action: payload.action, hasUrl: !!fileResult.url });
+          return;
+        }
+        case "send_group_msg": {
+          // 通用群消息发送：params.message 为 MessageSegment[]（text/image/music/json 等任意段）。
+          // 供 P3 工具（如点歌 send_song_card 发 music 段）经 IPC 直接发送富媒体。
+          const groupId = Number(payload.params.group_id);
+          const message = payload.params.message;
+          if (!Number.isFinite(groupId) || !Array.isArray(message) || message.length === 0) {
+            throw new Error("send_group_msg requires params.group_id and params.message array");
+          }
+          const result = await sendGroupMessage(deps.wsClient, groupId, message as MessageSegment[]);
+          reply({ success: true, result: { message_id: result.message_id } });
+          log.info("qq_action.done", { action: payload.action, message_id: result.message_id });
+          return;
         }
         default:
           throw new Error(`Unknown qq_action: ${payload.action}`);

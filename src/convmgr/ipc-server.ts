@@ -70,8 +70,12 @@ export function createP2IpcServer(port: number, deps: P2IpcServerDeps): IpcServe
     reply({ ack: true });
 
     // 进入冷却判断
-    await deps.cooldown.onTrigger(payload.group_id, payload.message_id, async (groupId, triggerMsgId) => {
-      await handleTrigger(groupId, triggerMsgId, deps, payload.reason, payload.time);
+    await deps.cooldown.onTrigger(payload.group_id, {
+      messageId: payload.message_id,
+      reason: payload.reason,
+      time: payload.time,
+    }, async (groupId, entry) => {
+      await handleTrigger(groupId, entry.messageId, deps, entry.reason, entry.time);
     });
   });
 
@@ -256,10 +260,15 @@ async function handleTrigger(
       silentTools: chatResponse.silent_tool_calls?.length ?? 0,
     });
 
-    // 3. 从文本中提取静默工具标记，执行并清洗文本
+    // 3. 提取正文标记 + 合并 P3 function calling 通道的静默工具调用（同轮同工具去重），执行并清洗文本
     const rawContent = chatResponse.content ?? "";
     const extracted = extractSilentCalls(rawContent, triggerUserId, triggerMsgId);
-    const silentResult = deps.silentTools.executeExtracted(extracted, groupId, triggerUserId);
+    const silentToolCalls = chatResponse.silent_tool_calls ?? [];
+    const silentResult = deps.silentTools.executeMerged(extracted, silentToolCalls, {
+      groupId,
+      userId: triggerUserId,
+      messageId: triggerMsgId,
+    });
 
     // 安全检查：跳过纯工具调用内容（DeepSeek XML invoke 等残留）
     const textToSend = extracted.cleanedText || rawContent;

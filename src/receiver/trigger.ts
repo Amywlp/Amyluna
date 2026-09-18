@@ -89,9 +89,13 @@ export function isTriggered(
   }
 
   // ── 优先级 3: 关键词 ──
-  const textForTrigger = cleanText.replace(/^\[image\]\s*/, "");
+  // 归一化全角波浪号（～ U+FF5E）→ 半角（~ U+007E），兼容用户输入习惯
+  const textForTrigger = cleanText
+    .replace(/～/g, "~")
+    .replace(/^\[image\]\s*/, "");
   for (const kw of config.triggerKeywords) {
-    if (textForTrigger.startsWith(kw)) {
+    const normKw = kw.replace(/～/g, "~");
+    if (textForTrigger.startsWith(normKw)) {
       log.debug("trigger.keyword", { keyword: kw });
       return { triggered: true, reason: "keyword" };
     }

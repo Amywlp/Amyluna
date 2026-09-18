@@ -11,6 +11,7 @@ import { loadConfig } from "../common/config";
 import { createLogger } from "../common/logger";
 import { createPool } from "../common/db/pool";
 import { MessageRepository } from "../common/db/message-repository";
+import { FileRepository } from "../common/db/file-repository";
 import { TokenRepository } from "../common/db/token-repository";
 import { IpcServer } from "../common/ipc/server";
 import { IpcClient } from "../common/ipc/client";
@@ -19,6 +20,7 @@ import { LLMRelay } from "./llm/relay";
 import { ToolRegistry } from "./tools/registry";
 import { registerBuiltinTools } from "./tools/builtin/index";
 import { registerQqFunTools } from "./tools/builtin/qq-fun";
+import { silentToolDefinitions } from "./tools/silent/definitions";
 import { connectMcpTools } from "./tools/mcp/client";
 import { PresetLoader } from "./preset-loader";
 import { ConversationLoop } from "./conversation-loop";
@@ -35,9 +37,10 @@ const AFFINITY_GUIDELINES = `
 你是赫萝，你拥有好感度系统来感知与每个用户的关系亲疏。**每次对话都必须评估对方态度**，在有明显理由时写入 affinity() 调用。
 
 ## 规则
-- 好感度范围 1-10：1=厌恶，5=平常/初次见面，10=极度喜爱
-- 每条用户消息前缀已包含好感度标记，如 \`{affinity:5}\`，你可以据此调整回复策略
+- 好感度范围 1-100（百分制）：1=厌恶，30=平常/初次见面，50=一般交情，80=老友，100=极度喜爱
+- 每条用户消息前缀已包含好感度标记，如 \`{affinity:50}\`，你可以据此调整回复策略
 - 在回复文本中写入 \`affinity(用户id, true)\` 可提升好感度 +1，写入 \`affinity(用户id, false)\` 可降低好感度 -1。格式详情见预设中的「第二类：文本调用工具」章节。系统会自动提取并静默执行，用户看不到这些调用。
+- **temp_mute 不是文本调用工具**——它只能通过系统标准 function calling 机制调用。严禁在回复正文、告知语或任何文本位置书写 temp_mute(...) 标记：系统不解析这种写法、也不会清洗，会原样发出去，等同调用失败且泄漏内部指令。
 - **必须遵守调用约束**：每次对话都要走一遍判断流程（善意/恶意/中性），中性可不调，但判断流程不可跳过
 
 ## 判断流程（每次对话执行）
@@ -60,16 +63,16 @@ const AFFINITY_GUIDELINES = `
 ### 不变 — 不写入 affinity()
 - 普通闲聊、询问信息、中性互动
 - 单次轻微的不耐烦或简短回复（可能只是用户忙）
-- 初次见面的用户保持默认 5
+- 初次见面的用户保持默认 30
 
 ## 好感度对回复的影响（必须遵守）
 | 好感度 | 称呼/语气 | 文字量 | 态度 |
 |--------|----------|--------|------|
-| 1-2 | 冷淡疏远，直呼"你" | 极短 | 保持基本礼貌但明显疏离 |
-| 3-4 | 礼貌客气 | 简短 | 公事公办，不多聊 |
-| 5-6 | 正常友好，自称"咱" | 适中 | 平常心对待 |
-| 7-8 | 热情亲切 | 偏多 | 主动关心，愿意多聊 |
-| 9-10 | 非常亲密，撒娇 | 较长 | 像老友般放松，主动分享 |
+| 1-20 | 冷淡疏远，直呼"你" | 极短 | 保持基本礼貌但明显疏离 |
+| 21-40 | 礼貌客气 | 简短 | 公事公办，不多聊 |
+| 41-60 | 正常友好，自称"咱" | 适中 | 平常心对待 |
+| 61-80 | 热情亲切 | 偏多 | 主动关心，愿意多聊 |
+| 81-100 | 非常亲密，撒娇 | 较长 | 像老友般放松，主动分享 |
 
 ## 维稳要求
 - 好感度变更有节制：同一轮对话中同一用户最多调整 1 次（除非用户行为极端反转）
@@ -89,14 +92,14 @@ const REPLY_FORMAT_CONSTRAINT = `
 1. **动作描述**：首行以中文全角括号包裹，例如（耳朵一竖，尾巴轻轻一晃）
 2. **文本内容**：至少包含一句完整的中文句子，表达你的想法、回答或感受
 3. **（可选）affinity() 调用**：根据对方态度在适当时写入
-4. **（可选）timer() 调用**：若对方要求定时提醒，写入 timer(时间, "事件文本")
+4. **（可选）动作型工具调用**：需要定时提醒时调用 timer 工具（duration_sec / event_text）；需要语音时调用 tts 工具；需要生成图片时调用 text2image 工具；需要 QQ 平台操作时调用 muri_agent 工具。这些工具由系统静默执行，**调用轮输出的正文会直接发送给用户**——因此本轮必须同时给出完整、面向用户的最终回复，不要只写告知语，也不要指望有下一轮补全
 5. **getmeme(标签)**：最后一行，系统会自动替换为表情图片
 
 ## 查询工具调用中的告知回复（调用 web_search / filesystem_read_file 等查询工具时）
 此时你正在调用工具，后续还会有工具返回结果。这类告知回复只需：
 1. **动作描述**
 2. **简短告知语**（如"稍等，咱查一下"）
-**禁止在告知回复中输出 getmeme()、affinity() 或 timer()！** 告知轮的表情包、好感度和定时器会由系统在最终回复时一起处理。
+**禁止在告知回复中输出 getmeme()、affinity()，也禁止在告知轮调用动作型工具（timer / tts / text2image / muri_agent）！** 告知轮只负责说明正在处理；表情包、好感度与动作型工具调用都留到最终回复轮一起处理。
 
 **禁止行为**：
 - 禁止跳过文本内容部分（只有动作描述没有正文）
@@ -129,6 +132,7 @@ async function main(): Promise<void> {
   // 3. 创建 DB 连接（工具注册 context_review 需要 repo + token 用量记录）
   const pool = createPool(config.db);
   const repo = new MessageRepository(pool);
+  const fileRepo = new FileRepository(pool);
   const tokenRepo = new TokenRepository(pool);
   log.info("db ready");
 
@@ -136,9 +140,29 @@ async function main(): Promise<void> {
   const p1Client = new IpcClient(config.p1Port, "P3→P1");
   const p2Client = new IpcClient(config.p2Port, "P3→P2");
 
+  // 4b. Vision 配置（resolve_media 等工具需要，提前到工具注册前构造）
+  const visionConfig: VisionConfig = {
+    alias: config.chat.visionAlias,
+    systemPrompt: config.chat.imagePrompt,
+  };
+
   // 5. 注册非静默工具
   const registry = new ToolRegistry();
-  registerBuiltinTools(registry, p1Client, repo);
+  registerBuiltinTools(registry, {
+    p1Client,
+    repo,
+    fileRepo,
+    relay,
+    visionConfig,
+  });
+
+  // 5b. 注册静默工具（block 型：仅提示模型可调用，P3 不执行，由 P2 收 silentToolCalls 执行）
+  for (const t of silentToolDefinitions) {
+    registry.register(t);
+  }
+  log.info("silentTools.registered", {
+    names: silentToolDefinitions.map((t) => t.definition.function.name),
+  });
 
   // 6. 连接 MCP（注册 MCP 工具到 registry）
   await connectMcpTools(registry, config.mcp.servers as Parameters<typeof connectMcpTools>[1]);
@@ -164,12 +188,6 @@ async function main(): Promise<void> {
     maxTurns: config.muriAgent.maxTurns,
     model: config.muriAgent.model,
   }, muriPresetBody);
-
-  // 10. Vision 配置
-  const visionConfig: VisionConfig = {
-    alias: config.chat.visionAlias,
-    systemPrompt: config.chat.imagePrompt,
-  };
 
   // 11. 启动 IPC Server（先监听，让 P1/P2 可以连接）
   const ipcServer = createP3IpcServer(config.p3Port, {

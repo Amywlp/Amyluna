@@ -44,6 +44,7 @@ export function logLLMResponse(
     msgCount: context.msgCount,
     finishReason: response.finishReason,
     content: response.content,
+    reasoningContent: response.reasoningContent ?? null,
     toolCalls: response.toolCalls?.map((tc) => ({
       id: tc.id,
       name: tc.function.name,

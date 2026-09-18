@@ -14,6 +14,7 @@ import { AffinityCache } from "./affinity/cache";
 import { AffinityInjector } from "./affinity/injector";
 import type { ContextEntry } from "./affinity/types";
 import { CooldownManager } from "./cooldown";
+import type { CooldownTriggerEntry } from "./cooldown";
 import { createDecomposePostProcessor, createNoopPostProcessor } from "./post-process";
 import { SilentToolExecutor } from "./silent-tools";
 import { loadConfig } from "../common/config";
@@ -31,9 +32,9 @@ const TEST_P3_PORT = 3197;
 function createMockAffinityCache(): AffinityCache {
   // Use a real cache with a minimal fake — just for unit tests
   return {
-    getEffective: (userId: number) => 5,
-    getState: (userId: number) => "5",
-    addDelta: (userId: number, delta: "+1" | "-1") => 5,
+    getEffective: (userId: number) => 50,
+    getState: (userId: number) => "50",
+    addDelta: (userId: number, delta: "+1" | "-1") => 50,
   } as unknown as AffinityCache;
 }
 
@@ -45,38 +46,38 @@ async function main(): Promise<void> {
 
   // clampAffinity
   console.assert(clampAffinity(0) === 1, "clamp 0 → 1");
-  console.assert(clampAffinity(5) === 5, "clamp 5 → 5");
-  console.assert(clampAffinity(11) === 10, "clamp 11 → 10");
+  console.assert(clampAffinity(50) === 50, "clamp 50 → 50");
+  console.assert(clampAffinity(101) === 100, "clamp 101 → 100");
   console.assert(clampAffinity(-5) === 1, "clamp -5 → 1");
   console.log("  ✓ clampAffinity");
 
   // parseAffinity
-  const p1 = parseAffinity("5");
-  console.assert(p1.longTerm === 5 && p1.shortTerms.length === 0, "parse '5'");
+  const p1 = parseAffinity("50");
+  console.assert(p1.longTerm === 50 && p1.shortTerms.length === 0, "parse '50'");
 
-  const p2 = parseAffinity("5+1+1");
-  console.assert(p2.longTerm === 5 && p2.shortTerms.length === 2
-    && p2.shortTerms[0] === "+1" && p2.shortTerms[1] === "+1", "parse '5+1+1'");
+  const p2 = parseAffinity("50+1+1");
+  console.assert(p2.longTerm === 50 && p2.shortTerms.length === 2
+    && p2.shortTerms[0] === "+1" && p2.shortTerms[1] === "+1", "parse '50+1+1'");
 
-  const p3 = parseAffinity("4+1-1");
-  console.assert(p3.longTerm === 4 && p3.shortTerms.length === 2
-    && p3.shortTerms[0] === "+1" && p3.shortTerms[1] === "-1", "parse '4+1-1'");
+  const p3 = parseAffinity("40+1-1");
+  console.assert(p3.longTerm === 40 && p3.shortTerms.length === 2
+    && p3.shortTerms[0] === "+1" && p3.shortTerms[1] === "-1", "parse '40+1-1'");
 
   const p4 = parseAffinity("invalid");
-  console.assert(p4.longTerm === 5 && p4.shortTerms.length === 0, "parse invalid → default");
+  console.assert(p4.longTerm === 30 && p4.shortTerms.length === 0, "parse invalid → default");
   console.log("  ✓ parseAffinity");
 
   // formatAffinity
-  console.assert(formatAffinity(5, ["+1", "+1"]) === "5+1+1", "format 5+1+1");
-  console.assert(formatAffinity(4, []) === "4", "format 4");
+  console.assert(formatAffinity(50, ["+1", "+1"]) === "50+1+1", "format 50+1+1");
+  console.assert(formatAffinity(40, []) === "40", "format 40");
   console.log("  ✓ formatAffinity");
 
   // effectiveAffinity
-  console.assert(effectiveAffinity("5") === 5, "eff '5' = 5");
-  console.assert(effectiveAffinity("5+1+1") === 7, "eff '5+1+1' = 7");
-  console.assert(effectiveAffinity("5-1") === 4, "eff '5-1' = 4");
-  console.assert(effectiveAffinity("5+1+1+1+1+1+1+1+1+1") === 10, "eff capped at 10");
-  console.assert(effectiveAffinity("5-1-1-1-1-1-1-1-1-1") === 1, "eff floored at 1");
+  console.assert(effectiveAffinity("50") === 50, "eff '50' = 50");
+  console.assert(effectiveAffinity("50+1+1") === 52, "eff '50+1+1' = 52");
+  console.assert(effectiveAffinity("50-1") === 49, "eff '50-1' = 49");
+  console.assert(effectiveAffinity("99+1+1") === 100, "eff capped at 100");
+  console.assert(effectiveAffinity("1-1") === 1, "eff floored at 1");
   console.log("  ✓ effectiveAffinity");
 
   // ─── 2. AffinityCache 状态机 ──────────────────────
@@ -90,20 +91,20 @@ async function main(): Promise<void> {
   console.log("  ✓ init from DB");
 
   // default state
-  console.assert(cache.getState(999999) === "5", "default user state = 5");
-  console.assert(cache.getEffective(999999) === 5, "default effective = 5");
+  console.assert(cache.getState(999999) === "30", "default user state = 30");
+  console.assert(cache.getEffective(999999) === 30, "default effective = 30");
   console.log("  ✓ default state");
 
   // addDelta: basic
   const eff1 = cache.addDelta(999999, "+1");
   console.log(`  +1 → effective=${eff1}, state=${cache.getState(999999)}`);
-  console.assert(eff1 === 6, "+1 → 6");
+  console.assert(eff1 === 31, "+1 → 31");
 
   // addDelta: cancel pair
   cache.addDelta(999999, "-1");
   const stateAfterCancel = cache.getState(999999);
   console.log(`  +1-1 → state=${stateAfterCancel} (相邻抵消)`);
-  console.assert(stateAfterCancel === "5", "+1-1 应抵消回 5");
+  console.assert(stateAfterCancel === "30", "+1-1 应抵消回 30");
 
   // addDelta: merge 3 same
   cache.addDelta(999999, "+1");
@@ -111,12 +112,12 @@ async function main(): Promise<void> {
   const eff3 = cache.addDelta(999999, "+1");
   const stateAfterMerge = cache.getState(999999);
   console.log(`  +1+1+1 → effective=${eff3}, state=${stateAfterMerge} (三连并)`);
-  console.assert(stateAfterMerge.startsWith("6"), "三连 +1 应并入长期好感度");
-  // 但注意：先抵消再合并，我们之前有+1-1已经抵消了，现在又+1+1+1
-  // 实际上第一次addDelta +1 → state=5+1, 然后addDelta -1 → state=5 (抵消)
-  // 然后三次+1: 5+1, 5+1+1, 5+1+1+1 → 合并三连 → 6
-  // 所以 effective 应该是 6
-  console.assert(cache.getEffective(999999) === 6, "三连并 effective=6");
+  console.assert(stateAfterMerge.startsWith("31"), "三连 +1 应并入长期好感度");
+  // 但注意：先抵消再合并，我们之前有+10-10已经抵消了，现在又+10+10+10
+  // 实际上第一次addDelta +1 → state=30+1, 然后addDelta -1 → state=30 (抵消)
+  // 然后三次+1: 30+1, 30+1+1, 30+1+1+1 → 合并三连 → 31
+  // 所以 effective 应该是 31
+  console.assert(cache.getEffective(999999) === 31, "三连并 effective=31");
 
   // Cleanup test user
   await cache.addDelta(999999, "-1"); // reset
@@ -153,25 +154,25 @@ async function main(): Promise<void> {
   const cooldown = new CooldownManager(500); // 500ms 冷却（测试用短值）
 
   let fireCount = 0;
-  const onFire = async (gid: number, _msgId: number) => {
+  const onFire = async (gid: number, _entry: CooldownTriggerEntry) => {
     fireCount++;
     console.log(`    [fire] group=${gid}, count=${fireCount}`);
   };
 
   // 首次触发：应立即 fire
-  await cooldown.onTrigger(1000000001, 10001, onFire);
+  await cooldown.onTrigger(1000000001, { messageId: 10001 }, onFire);
   console.assert(fireCount === 1, "首次触发应立即 fire");
   const state1 = cooldown.getState(1000000001);
   console.assert(state1?.isCooling === true, "应进入冷却");
   console.log("  ✓ 首次触发立即 fire + 进入冷却");
 
   // 冷却中的触发：应缓存
-  await cooldown.onTrigger(1000000001, 10002, onFire);
+  await cooldown.onTrigger(1000000001, { messageId: 10002 }, onFire);
   console.assert(fireCount === 1, "冷却中不 fire");
   console.assert(state1?.msgCache.length === 1, "应缓存 1 条消息");
   console.log("  ✓ 冷却中缓存");
 
-  await cooldown.onTrigger(1000000001, 10003, onFire);
+  await cooldown.onTrigger(1000000001, { messageId: 10003 }, onFire);
   console.assert(state1?.msgCache.length === 2, "应缓存 2 条消息");
   console.log("  ✓ 继续缓存");
 
@@ -234,15 +235,15 @@ async function main(): Promise<void> {
 
   // update_affinity
   const testUserId = 88888;
-  // Reset to 5
-  cache.addDelta(testUserId, cache.getEffective(testUserId) > 5 ? "-1" : "+1");
+  // Reset to 50
+  cache.addDelta(testUserId, cache.getEffective(testUserId) > 30 ? "-1" : "+1");
   // Set up: get current effective
   const currentEff = cache.getEffective(testUserId);
-  // Try to set to 5 baseline
-  if (currentEff > 5) {
-    for (let i = 0; i < currentEff - 5; i++) cache.addDelta(testUserId, "-1");
-  } else if (currentEff < 5) {
-    for (let i = 0; i < 5 - currentEff; i++) cache.addDelta(testUserId, "+1");
+  // Try to set to 50 baseline
+  if (currentEff > 30) {
+    for (let i = 0; i < (currentEff - 30); i++) cache.addDelta(testUserId, "-1");
+  } else if (currentEff < 30) {
+    for (let i = 0; i < (30 - currentEff); i++) cache.addDelta(testUserId, "+1");
   }
 
   const affResult = st.executeAll([
@@ -250,7 +251,7 @@ async function main(): Promise<void> {
   ]);
   const newEff = cache.getEffective(testUserId);
   console.log(`  update_affinity(${testUserId}, +1): effective=${newEff}, error=${affResult.error ?? "无"}`);
-  console.assert(newEff === 6, "+1 后 effective 应为 6");
+  console.assert(newEff === 31, "+1 后 effective 应为 31");
   console.assert(!affResult.error, "应无错误");
   console.log("  ✓ update_affinity");
 

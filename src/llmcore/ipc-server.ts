@@ -113,7 +113,7 @@ export function createP3IpcServer(port: number, deps: P3IpcServerDeps): IpcServe
         setRequestContext({
           group_id: payload.group_id,
           user_id: payload.user_id,
-          affinity: payload.affinity ?? 5,
+          affinity: payload.affinity ?? 30,
         });
       }
 

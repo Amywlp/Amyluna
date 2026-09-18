@@ -10,6 +10,7 @@ import { loadConfig } from "../common/config";
 import { createLogger } from "../common/logger";
 import { createPool } from "../common/db/pool";
 import { MessageRepository } from "../common/db/message-repository";
+import { FileRepository } from "../common/db/file-repository";
 import { IpcClient } from "../common/ipc/client";
 import { Watchdog } from "../common/watchdog";
 import { WsClient } from "./ws-client";
@@ -57,6 +58,7 @@ async function main(): Promise<void> {
   // 1. 连接 DB
   const pool = createPool(config.db);
   const repo = new MessageRepository(pool);
+  const fileRepo = new FileRepository(pool);
   log.info("db ready");
 
   // 2. 群状态管理
@@ -138,7 +140,7 @@ async function main(): Promise<void> {
       });
 
       // 1. 消息入库（所有白名单群消息，包括 bot 自身）
-      const saveResult = await saveMessage(event, repo, wsClient);
+      const saveResult = await saveMessage(event, repo, wsClient, fileRepo);
 
       // 跳过 bot 自身消息
       if (isOwnMessage) {
@@ -160,6 +162,16 @@ async function main(): Promise<void> {
         } catch (err) {
           log.warn("vision.send.fail", { error: String(err) });
         }
+      }
+
+      // 2.5. 群文件路由预留：已入库 group_files（含元数据/url），后续按需处理
+      //       —— 预留判断点：将来可按扩展名/类型路由到音乐分析 / 视频处理等
+      if (saveResult.hasFiles && saveResult.fileInfo.length > 0) {
+        log.info("file.route.pending", {
+          group_id: event.group_id,
+          message_id: event.message_id,
+          files: saveResult.fileInfo.map((f) => f.fileName),
+        });
       }
 
       // 3. 触发判断

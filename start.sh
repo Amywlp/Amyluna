@@ -58,7 +58,7 @@ for i in $(seq 1 30); do
     fi
   done
   if $ALL_READY; then
-    echo "所有进程就绪！监听: <GROUP_ID>"
+    echo "所有进程就绪！监听: 1000000001"
     break
   fi
   sleep 1

@@ -197,7 +197,7 @@ src/
         index.ts             主 agent 工具注册入口
         get-time.ts          获取当前时间（支持 IANA 时区）
         web-search.ts        Tavily 网络搜索
-        context-review.ts    聊天记录回顾 — 检索用户最近消息（好感度 > 8 可用）
+        context-review.ts    聊天记录回顾 — 检索用户最近消息（好感度 > 80 可用）
         temp-mute.ts         临时禁言 — mute_time × severe_level，印象联动升级
         qq-fun.ts            QQ 互动工具（group_poke / send_like / set_group_reaction，仅 muri_agent 使用）
       mcp/
@@ -253,7 +253,7 @@ src/
    │      ├── resolveQuotes() → 引用消息嵌入 (↳ MsgID「原文」)
    │      ├── AffinityInjector.inject() → 注入 affinity:N
    │      ├── 格式化为上下文字符串:
-   │      │     [MsgID:xxx] [sender](user_id) {group:xxx, affinity:5}: text
+   │      │     [MsgID:xxx] [sender](user_id) {group:xxx, affinity:50}: text
    │      └── 底部追加 [触发消息] 段（触发消息单独拎出；随机插嘴显示 "(随机插嘴)"）
    │
    ├── 5c. p3Client.request("chat", {context, preset, group_id, message_id, user_id, time, affinity, trigger_user_impressions})
@@ -273,7 +273,7 @@ src/
    │          ├── 注册工具 → ToolRegistry.execute() → 结果入 messages
    │          │     ├── get_time → 当前时间查询
    │          │     ├── web_search → Tavily 搜索
-   │          │     ├── context_review → DB 检索用户最近消息（好感度 > 8 校验）
+   │          │     ├── context_review → DB 检索用户最近消息（好感度 > 80 校验）
    │          │     ├── temp_mute → IPC→P1 静音列表（印象联动升级）
    │          │     └── MCP 工具 → MCP server 调用
    │          ├── 未注册工具 → 收集到 silent_tool_calls[]
@@ -505,7 +505,7 @@ src/
 **context_review 工具** (`tools/builtin/context-review.ts`)：
 - LLM 通过 function calling 调用，注册在主 agent ToolRegistry 中
 - 参数：`user_id`（目标 QQ 号）、`limit`（检索条数，默认 40，最大 200）
-- 权限：仅触发用户好感度 > 8 时可用（由 P2 在 `ChatPayload.affinity` 中传入）
+- 权限：仅触发用户好感度 > 80 时可用（由 P2 在 `ChatPayload.affinity` 中传入）
 - 调用 `MessageRepository.findRecentByGroupAndUser()` 查询 DB
 - 返回格式化的消息时间线（时间升序，含 MsgID/发送者/内容）
 - `requiresFollowUp: true`，LLM 在下一轮综合成自然语言总结回复
@@ -517,7 +517,7 @@ src/
 | 内置 | `get_time` | ✅ | `registerBuiltinTools()` | 主 agent 使用 |
 | 内置 | `web_search` | ✅ | `registerBuiltinTools()` | 主 agent 使用 |
 | 内置 | `temp_mute` | ✅ | `registerBuiltinTools()` | 主 agent 使用，五级静音 + 印象联动 |
-| 内置 | `context_review` | ✅ | `registerBuiltinTools()` | 主 agent 使用，好感度 > 8 可用 |
+| 内置 | `context_review` | ✅ | `registerBuiltinTools()` | 主 agent 使用，好感度 > 80 可用 |
 | MCP-FS | `filesystem_read_file` / `list_directory` / `search_files` 等 14 个 | ✅ | MCP stdio | 主 agent 使用 |
 | MCP-RAG | `ragflow_ragflow_retrieval` | ✅ | MCP stdio | 主 agent 使用 |
 | QQ Fun | `group_poke` | — | `registerQqFunTools()` | 仅 muri_agent 使用，独立 ToolRegistry |
@@ -543,13 +543,13 @@ src/
 
 ### 4. 好感度系统 (`src/convmgr/affinity/`)
 
-**存储格式**：状态字符串 `"5+1+1"` — 首数字为长期好感度 (1-10)，后续 `+1`/`-1` 为短期变更。
+**存储格式**：状态字符串 `"50+10+10"` — 首数字为长期好感度 (百分制 1-100)，默认 30（平常/初次见面），后续 `+10`/`-10` 为短期变更。
 
 **状态机规则**：
 1. LLM 写入 `affinity(userId, true/false, "印象?")` → P2 提取 → `addDelta()`
-2. 相邻 `+1-1` / `-1+1` → 循环抵消
+2. 相邻 `+10-10` / `-10+10` → 循环抵消
 3. 连续三个同号 → 合并入长期好感度 → 异步写 DB
-4. 范围始终在 [1, 10] 截断
+4. 范围始终在 [1, 100] 截断
 
 **用户印象系统**：
 - `affinity()` 第三个可选参数：印象文本（≤10 字），描述用户当前行为特征
@@ -582,27 +582,6 @@ src/
 ---
 
 ## 配置参考 (.env)
-
-> **配置项定位索引**：所有配置项由两处共同定义 —— 模板在 `.env.example`（复制为 `.env` 后填写），**权威解析与默认值在 `src/common/config.ts` 的 `loadConfig()`**。下表给出各配置组的精确定位，便于查找与回填。
->
-> ⚠️ 上传前敏感值（DB 密码、LLM API Key、access token、bot/群 QQ 号等）已清除为占位符，需按需重新填入。
-
-| 配置组 | `config.ts` 解析位置 | `.env.example` 模板位置 |
-|--------|----------------------|------------------------|
-| 进程端口 | `loadConfig()` 237-239 | §5 进程端口 |
-| SnowLuma WebSocket | 240-246 | §19 SnowLuma WebSocket |
-| LLM Relay | 247-250（`loadLLMProviders` 157-181） | §26 LLM Relay |
-| Chat | 251-277 | §30 Chat |
-| MySQL | 278-286 | §10 MySQL |
-| MCP | 287（`parseMcpServers` 185-221） | §46 MCP |
-| Silent/Task Queue | 288-303 | §101 Silent Tool Task Queue |
-| TTS | 304-315 | §53 TTS |
-| Text2Image | 316-329 | §75 Text2Image |
-| Watchdog | 334-337 | §49 Watchdog |
-| Rate Limit | 275-276（Chat 组内） | 仅 `.env`，`.env.example` 未列 |
-| Muri Agent | 330-333 | 仅 `.env`，`.env.example` 未列 |
-
-> 说明：`.env.example` 为最小模板，缺少数个仅在实际 `.env` 出现的键（如 `RATE_LIMIT_*`、`MURI_AGENT_*`、`PRESET_NAME`/`PRESET_DIR` 等），完整键位以 `config.ts` 的 `loadConfig()` 为准。
 
 ### 进程端口
 
@@ -861,7 +840,7 @@ pm2 start ecosystem.config.js
 26. **好感度印象记忆**：affinity() 支持可选的第三个参数记录用户印象（≤10 字），FIFO 管理最多 10 条。印象中的冒犯关键词与 temp_mute 联动，自动升级静音等级
 27. **五级静音系统**：temp_mute 的 severe_level 1-5 直接对应角色预设中「面对挑逗与冒犯的应对」五级系统，实际静音时长 = mute_time × severe_level（120s ~ 3000s）
 28. **静音惰性清理**：TempMuteList 无定时器，过期条目在每次消息到达的 `checkAndClean()` 中惰性移除，按 `mute_end_time` ASC 排序以优化清理效率
-29. **好感度门控工具**：context_review 基于触发用户的好感度（> 8）进行权限校验，好感度由 P2 在 ChatPayload 中传入 P3，不依赖 LLM 自行判断
+29. **好感度门控工具**：context_review 基于触发用户的好感度（> 80）进行权限校验，好感度由 P2 在 ChatPayload 中传入 P3，不依赖 LLM 自行判断
 30. **Text2Image 合并转发发送**：图片 + 元数据作为一个合并转发卡片的两条消息，避免图片与描述分离，用户体验更好
 
 ---

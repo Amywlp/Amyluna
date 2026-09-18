@@ -4,7 +4,7 @@
  * 非静默工具，注册在主 agent (holo) 的 ToolRegistry 中。
  * LLM 通过 function calling 主动调用，P3 查询 DB 后返回消息记录。
  *
- * 权限：仅好感度 > 8 的触发用户可用。
+ * 权限：仅好感度 > 80 的触发用户可用。
  * 对话轮数：调用后 requiresFollowUp=true，LLM 在下一轮综合总结。
  */
 
@@ -19,7 +19,7 @@ export interface ContextReviewRequestContext {
   group_id: number;
   /** 触发消息的发送者 QQ 号 */
   user_id: number;
-  /** 触发用户的有效好感度 1-10 */
+  /** 触发用户的有效好感度 1-100 */
   affinity: number;
 }
 
@@ -68,7 +68,7 @@ export function createContextReviewTool(repo: MessageRepository): ToolMeta {
           "检索指定用户在群聊中的最近消息记录，用于回顾聊天内容、总结某人的发言或查找关键信息。" +
           "调用此工具后，你会在下一轮收到检索结果，请直接综合成自然语言总结回复用户。" +
           "收到结果后直接输出总结，不要再调用其他工具（除非用户明确提出了新的、不相关的请求）。" +
-          "仅好感度 > 8 的用户可以使用此功能；若好感度不足，工具会返回错误。",
+          "仅好感度 > 80 的用户可以使用此功能；若好感度不足，工具会返回错误。",
         parameters: {
           type: "object",
           properties: {
@@ -108,7 +108,7 @@ export function createContextReviewTool(repo: MessageRepository): ToolMeta {
         return { error: "请求上下文不可用，请稍后重试" };
       }
 
-      if (ctx.affinity <= 8) {
+      if (ctx.affinity <= 80) {
         log.info("contextReview.permissionDenied", {
           requester: ctx.user_id,
           affinity: ctx.affinity,
@@ -116,7 +116,7 @@ export function createContextReviewTool(repo: MessageRepository): ToolMeta {
         });
         return {
           error:
-            `好感度不足（当前 ${ctx.affinity}，需要 > 8）。` +
+            `好感度不足（当前 ${ctx.affinity}，需要 > 80）。` +
             "聊天记录回顾功能仅对好感度较高的用户开放。",
         };
       }
